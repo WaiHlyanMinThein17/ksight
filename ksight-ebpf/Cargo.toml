@@ -1,0 +1,17 @@
+[package]
+name = "ksight-ebpf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ksight-common = { workspace = true }
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "ksight"
+path = "src/main.rs"

@@ -1,0 +1,23 @@
+[package]
+name = "ksight-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ksight-common = { workspace = true }
+aya = { workspace = true }
+aya-log = { workspace = true }
+anyhow = { workspace = true, features = ["std"] }
+env_logger = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "net"] }
+
+[build-dependencies]
+anyhow = { workspace = true, features = ["std"] }
+aya-build = { workspace = true }
+cargo_metadata = { workspace = true }
+
+[[bin]]
+name = "ksight"
+path = "src/main.rs"

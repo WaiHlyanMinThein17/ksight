@@ -2,9 +2,41 @@
 resolver = "2"
 members = [
     "ksight-common",
+    "ksight-ebpf",
+    "ksight-agent",
 ]
+# The eBPF crate is a member (so it shares the lockfile and is reachable),
+# but excluded from default-members so a plain `cargo build` builds the
+# host-target crates. The agent's build.rs cross-compiles ksight-ebpf for
+# the BPF target via aya-build.
+default-members = ["ksight-common", "ksight-agent"]
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+ksight-common = { path = "ksight-common" }
+
+aya = { git = "https://github.com/aya-rs/aya", default-features = false }
+aya-build = { git = "https://github.com/aya-rs/aya", default-features = false }
+aya-ebpf = { git = "https://github.com/aya-rs/aya", default-features = false }
+aya-log = { git = "https://github.com/aya-rs/aya", default-features = false }
+aya-log-ebpf = { git = "https://github.com/aya-rs/aya", default-features = false }
+
+anyhow = { version = "1", default-features = false }
+cargo_metadata = { version = "0.23.0", default-features = false }
+env_logger = { version = "0.11.5", default-features = false }
+libc = { version = "0.2.159", default-features = false }
+log = { version = "0.4.22", default-features = false }
+tokio = { version = "1.40.0", default-features = false }
+which = { version = "6.0.0", default-features = false }
+
+# eBPF objects need these settings to produce valid, debuggable BPF:
+# codegen-units=1 (BPF backend wants a single unit), debug=2 + no strip
+# so BTF survives into the object (CO-RE relocations depend on it).
+[profile.release.package.ksight-ebpf]
+debug = 2
+codegen-units = 1
+strip = false
