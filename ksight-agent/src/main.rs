@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
                     // local so we don't hold the borrow across the next read.
                     let event: ExecEvent =
                         unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const ExecEvent) };
-                    println!("pid={:<8} comm={}", event.pid, comm_to_str(&event.comm));
+                    println!("pid={:<8} ppid={:<8} comm={}", event.pid, event.ppid, comm_to_str(&event.comm));
                 }
                 guard.clear_ready();
             }
