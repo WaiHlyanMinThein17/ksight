@@ -16,14 +16,17 @@ mod vmlinux;
 
 use aya_ebpf::{
     helpers::{
-        bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_task, bpf_probe_read_kernel,
+        bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_task,
+        bpf_probe_read_kernel, bpf_probe_read_user_str_bytes,
     },
     macros::{map, tracepoint},
     maps::RingBuf,
     programs::TracePointContext,
 };
-use ksight_common::ExecEvent;
+use ksight_common::{Event, EventKind, EventPayload, ExecPayload, PATH_LEN};
 use vmlinux::task_struct;
+
+const FILENAME_OFFSET: usize = 24;
 
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
@@ -41,53 +44,73 @@ fn try_exec(_ctx: TracePointContext) -> Result<u32, u32> {
         Ok(comm) => comm,
         Err(_) => return Ok(0),
     };
-
     let pid = (bpf_get_current_pid_tgid() >> 32) as u32;
-
-    // ppid via CO-RE. bpf_get_current_task() returns a raw *mut task_struct.
-    // We read real_parent (a *mut task_struct), then that parent's tgid.
-    // Each read goes through bpf_probe_read_kernel, which the verifier allows
-    // (it can fault safely), and because the aya-tool-generated task_struct
-    // carries preserve_access_index, the field offsets are CO-RE-relocated
-    // against the running kernel's BTF at load time -- not hardcoded.
     let ppid = unsafe {
         let task = bpf_get_current_task() as *const task_struct;
-        if task.is_null() {
-            0
-        } else {
-            match read_ppid(task) {
-                Ok(p) => p,
-                Err(_) => 0,
-            }
-        }
+        if task.is_null() { 0 } else { read_ppid(task).unwrap_or(0) }
     };
 
-    let event = ExecEvent { pid, ppid, comm };
+    let event = Event {
+        kind: EventKind::Exec,
+        payload: EventPayload {
+            exec: ExecPayload { pid, ppid, comm },
+        },
+    };
 
-    match EVENTS.reserve::<ExecEvent>(0) {
-        Some(mut entry) => {
-            entry.write(event);
-            entry.submit(0);
-        }
-        None => {}
+    if let Some(mut entry) = EVENTS.reserve::<Event>(0) {
+        entry.write(event);
+        entry.submit(0);
     }
-
     Ok(0)
 }
 
-/// Read real_parent->tgid from a task_struct via two CO-RE-relocated reads.
-unsafe fn read_ppid(task: *const task_struct) -> Result<u32, i64> {
-    // The caller must pass a valid task pointer (the fn's unsafe contract).
-    // The actual unsafe operations -- raw-pointer derefs and probe reads --
-    // are marked explicitly per Rust 2024's unsafe_op_in_unsafe_fn.
+#[tracepoint]
+pub fn ksight_open(ctx: TracePointContext) -> u32 {
+    match try_open(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_open(ctx: TracePointContext) -> Result<u32, u32> {
+    let comm = match bpf_get_current_comm() {
+        Ok(comm) => comm,
+        Err(_) => return Ok(0),
+    };
+    let pid = (bpf_get_current_pid_tgid() >> 32) as u32;
+
+    let filename_ptr: *const u8 = match unsafe { ctx.read_at(FILENAME_OFFSET) } {
+        Ok(ptr) => ptr,
+        Err(_) => return Ok(0),
+    };
+
+    let Some(mut entry) = EVENTS.reserve::<Event>(0) else {
+        return Ok(0);
+    };
+
+    let ev = entry.as_mut_ptr();
     unsafe {
-        // real_parent is a *mut task_struct field of task_struct.
+        (*ev).kind = EventKind::Open;
+        (*ev).payload.open.pid = pid;
+        (*ev).payload.open.comm = comm;
+        let buf = &mut (*ev).payload.open.filename;
+        *buf = [0u8; PATH_LEN];
+        if bpf_probe_read_user_str_bytes(filename_ptr, buf).is_err() {
+            entry.discard(0);
+            return Ok(0);
+        }
+    }
+    entry.submit(0);
+    Ok(0)
+}
+
+unsafe fn read_ppid(task: *const task_struct) -> Result<u32, i64> {
+    unsafe {
         let parent: *const task_struct =
             bpf_probe_read_kernel(&(*task).real_parent)? as *const task_struct;
         if parent.is_null() {
             return Ok(0);
         }
-        // tgid is the parent's thread-group id == the parent's "PID" in user terms.
         let tgid: i32 = bpf_probe_read_kernel(&(*parent).tgid)?;
         Ok(tgid as u32)
     }

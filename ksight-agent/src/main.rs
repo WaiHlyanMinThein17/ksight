@@ -1,17 +1,15 @@
 use std::borrow::Cow;
 
 use aya::{maps::RingBuf, programs::TracePoint};
-use log::{debug, warn};
+use log::debug;
 use tokio::io::unix::AsyncFd;
 
-use ksight_common::ExecEvent;
+use ksight_common::{Event, EventKind};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    // Load the eBPF object embedded at compile time by build.rs. This invokes
-    // the bpf() syscall and triggers the verifier.
     let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
         "/ksight"
@@ -21,19 +19,18 @@ async fn main() -> anyhow::Result<()> {
         debug!("eBPF logger not initialized: {e}");
     }
 
-    // Find the tracepoint program by its function name, load and attach it.
-    let program: &mut TracePoint = ebpf.program_mut("ksight_exec").unwrap().try_into()?;
-    program.load()?;
-    program.attach("syscalls", "sys_enter_execve")?;
+    let exec: &mut TracePoint = ebpf.program_mut("ksight_exec").unwrap().try_into()?;
+    exec.load()?;
+    exec.attach("syscalls", "sys_enter_execve")?;
 
-    // Take ownership of the ring buffer map for reading.
+    let open: &mut TracePoint = ebpf.program_mut("ksight_open").unwrap().try_into()?;
+    open.load()?;
+    open.attach("syscalls", "sys_enter_openat")?;
+
     let ring = RingBuf::try_from(ebpf.take_map("EVENTS").unwrap())?;
-
-    // The ring buffer exposes a pollable fd; wrap it in AsyncFd so we await
-    // readiness instead of busy-polling.
     let mut async_fd = AsyncFd::new(ring)?;
 
-    println!("ksight: tracing execve. Ctrl-C to stop.");
+    println!("ksight: tracing exec + open. Ctrl-C to stop.");
 
     loop {
         tokio::select! {
@@ -46,17 +43,12 @@ async fn main() -> anyhow::Result<()> {
                 let ring = guard.get_inner_mut();
                 while let Some(item) = ring.next() {
                     let bytes: &[u8] = &item;
-                    if bytes.len() < size_of::<ExecEvent>() {
-                        warn!("short ring buffer read: {} bytes", bytes.len());
+                    if bytes.len() < size_of::<Event>() {
                         continue;
                     }
-                    // Reinterpret the bytes as our repr(C) struct. Sound because
-                    // the kernel wrote exactly this layout; ExecEvent is Copy
-                    // with no padding or invalid bit patterns. Copy out to a
-                    // local so we don't hold the borrow across the next read.
-                    let event: ExecEvent =
-                        unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const ExecEvent) };
-                    println!("pid={:<8} ppid={:<8} comm={}", event.pid, event.ppid, comm_to_str(&event.comm));
+                    let event: Event =
+                        unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const Event) };
+                    print_event(&event);
                 }
                 guard.clear_ready();
             }
@@ -66,9 +58,30 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Convert a NUL-padded 16-byte kernel comm field into a printable string,
-/// trimming at the first NUL. Lossy on invalid UTF-8 rather than panicking.
-fn comm_to_str(comm: &[u8; 16]) -> Cow<'_, str> {
-    let end = comm.iter().position(|&b| b == 0).unwrap_or(comm.len());
-    String::from_utf8_lossy(&comm[..end])
+fn print_event(event: &Event) {
+    match event.kind {
+        EventKind::Exec => {
+            let p = unsafe { event.payload.exec };
+            println!(
+                "EXEC  pid={:<8} ppid={:<8} comm={}",
+                p.pid,
+                p.ppid,
+                bytes_to_str(&p.comm)
+            );
+        }
+        EventKind::Open => {
+            let p = unsafe { event.payload.open };
+            println!(
+                "OPEN  pid={:<8} comm={:<16} {}",
+                p.pid,
+                bytes_to_str(&p.comm),
+                bytes_to_str(&p.filename)
+            );
+        }
+    }
+}
+
+fn bytes_to_str(buf: &[u8]) -> Cow<'_, str> {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..end])
 }
