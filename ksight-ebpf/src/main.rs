@@ -24,8 +24,8 @@ use aya_ebpf::{
     programs::TracePointContext,
 };
 use ksight_common::{
-    Event, EventKind, EventPayload, ExecPayload, Filter, COMM_LEN, FILTER_MODE_COMM,
-    FILTER_MODE_PID, PATH_LEN,
+    COMM_LEN, Event, EventKind, EventPayload, ExecPayload, FILTER_MODE_COMM, FILTER_MODE_PID,
+    Filter, PATH_LEN,
 };
 use vmlinux::task_struct;
 
@@ -86,7 +86,11 @@ fn try_exec(_ctx: TracePointContext) -> Result<u32, u32> {
 
     let ppid = unsafe {
         let task = bpf_get_current_task() as *const task_struct;
-        if task.is_null() { 0 } else { read_ppid(task).unwrap_or(0) }
+        if task.is_null() {
+            0
+        } else {
+            read_ppid(task).unwrap_or(0)
+        }
     };
 
     let event = Event {

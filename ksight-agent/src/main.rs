@@ -9,7 +9,7 @@ use log::debug;
 use tokio::io::unix::AsyncFd;
 
 use ksight_common::{
-    Event, EventKind, Filter, COMM_LEN, FILTER_MODE_COMM, FILTER_MODE_NONE, FILTER_MODE_PID,
+    COMM_LEN, Event, EventKind, FILTER_MODE_COMM, FILTER_MODE_NONE, FILTER_MODE_PID, Filter,
 };
 
 #[derive(Parser)]
