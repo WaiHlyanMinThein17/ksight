@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use aya::{
-    maps::{Array, RingBuf},
+    maps::{Array, PerCpuArray, RingBuf},
     programs::TracePoint,
 };
 use clap::Parser;
@@ -10,10 +10,11 @@ use tokio::io::unix::AsyncFd;
 
 use ksight_common::{
     COMM_LEN, Event, EventKind, FILTER_MODE_COMM, FILTER_MODE_NONE, FILTER_MODE_PID, Filter,
+    HIST_BUCKETS,
 };
 
 #[derive(Parser)]
-#[command(about = "eBPF process exec + file open tracer")]
+#[command(about = "eBPF process exec + file open tracer with block I/O latency histogram")]
 struct Args {
     #[arg(long, conflicts_with = "comm")]
     pid: Option<u32>,
@@ -66,10 +67,22 @@ async fn main() -> anyhow::Result<()> {
     open.load()?;
     open.attach("syscalls", "sys_enter_openat")?;
 
+    let issue: &mut TracePoint = ebpf.program_mut("ksight_block_issue").unwrap().try_into()?;
+    issue.load()?;
+    issue.attach("block", "block_rq_issue")?;
+
+    let complete: &mut TracePoint = ebpf
+        .program_mut("ksight_block_complete")
+        .unwrap()
+        .try_into()?;
+    complete.load()?;
+    complete.attach("block", "block_rq_complete")?;
+
+    let hist: PerCpuArray<_, u64> = PerCpuArray::try_from(ebpf.take_map("HIST").unwrap())?;
     let ring = RingBuf::try_from(ebpf.take_map("EVENTS").unwrap())?;
     let mut async_fd = AsyncFd::new(ring)?;
 
-    println!("ksight: tracing exec + open. Ctrl-C to stop.");
+    println!("ksight: tracing exec + open + block I/O latency. Ctrl-C to stop.");
 
     loop {
         tokio::select! {
@@ -94,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    print_histogram(&hist)?;
     Ok(())
 }
 
@@ -120,6 +134,36 @@ fn print_event(event: &Event) {
     }
 }
 
+fn print_histogram(
+    hist: &PerCpuArray<impl core::borrow::Borrow<aya::maps::MapData>, u64>,
+) -> anyhow::Result<()> {
+    let mut totals = [0u64; HIST_BUCKETS];
+    for bucket in 0..HIST_BUCKETS {
+        let per_cpu = hist.get(&(bucket as u32), 0)?;
+        totals[bucket] = per_cpu.iter().sum();
+    }
+
+    let max = totals.iter().copied().max().unwrap_or(0);
+    if max == 0 {
+        println!("\nNo block I/O recorded.");
+        return Ok(());
+    }
+
+    println!("\nBlock I/O latency histogram:");
+    println!("{:>18} {:>10}  {}", "usec", "count", "distribution");
+    for (b, &count) in totals.iter().enumerate() {
+        if count == 0 {
+            continue;
+        }
+        let low_us = (1u64 << b) / 1000;
+        let high_us = ((1u64 << b) * 2 - 1) / 1000;
+        let range = format!("{} -> {}", low_us, high_us);
+        let bar_len = (count as usize * 40 / max as usize).max(1);
+        let bar: String = core::iter::repeat('*').take(bar_len).collect();
+        println!("{:>18} {:>10}  {}", range, count, bar);
+    }
+    Ok(())
+}
 fn bytes_to_str(buf: &[u8]) -> Cow<'_, str> {
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(&buf[..end])

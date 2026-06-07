@@ -63,3 +63,13 @@ pub const FILTER_MODE_COMM: u32 = 2;
 
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for Filter {}
+
+pub const HIST_BUCKETS: usize = 64;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RequestKey {
+    pub sector: u64,
+    pub dev: u32,
+    pub _pad: u32,
+}
