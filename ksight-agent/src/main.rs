@@ -1,14 +1,50 @@
 use std::borrow::Cow;
 
-use aya::{maps::RingBuf, programs::TracePoint};
+use aya::{
+    maps::{Array, RingBuf},
+    programs::TracePoint,
+};
+use clap::Parser;
 use log::debug;
 use tokio::io::unix::AsyncFd;
 
-use ksight_common::{Event, EventKind};
+use ksight_common::{
+    Event, EventKind, Filter, COMM_LEN, FILTER_MODE_COMM, FILTER_MODE_NONE, FILTER_MODE_PID,
+};
+
+#[derive(Parser)]
+#[command(about = "eBPF process exec + file open tracer")]
+struct Args {
+    #[arg(long, conflicts_with = "comm")]
+    pid: Option<u32>,
+    #[arg(long)]
+    comm: Option<String>,
+}
+
+fn build_filter(args: &Args) -> Filter {
+    let mut filter = Filter {
+        mode: FILTER_MODE_NONE,
+        pid: 0,
+        comm: [0u8; COMM_LEN],
+        comm_len: 0,
+    };
+    if let Some(pid) = args.pid {
+        filter.mode = FILTER_MODE_PID;
+        filter.pid = pid;
+    } else if let Some(comm) = &args.comm {
+        filter.mode = FILTER_MODE_COMM;
+        let bytes = comm.as_bytes();
+        let len = bytes.len().min(COMM_LEN);
+        filter.comm[..len].copy_from_slice(&bytes[..len]);
+        filter.comm_len = len as u32;
+    }
+    filter
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
+    let args = Args::parse();
 
     let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
@@ -18,6 +54,9 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = aya_log::EbpfLogger::init(&mut ebpf) {
         debug!("eBPF logger not initialized: {e}");
     }
+
+    let mut filter_map: Array<_, Filter> = Array::try_from(ebpf.take_map("FILTER").unwrap())?;
+    filter_map.set(0, build_filter(&args), 0)?;
 
     let exec: &mut TracePoint = ebpf.program_mut("ksight_exec").unwrap().try_into()?;
     exec.load()?;

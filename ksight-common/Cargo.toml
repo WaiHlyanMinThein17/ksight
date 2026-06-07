@@ -5,3 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+aya = { workspace = true, optional = true }
+
+[features]
+user = ["dep:aya"]

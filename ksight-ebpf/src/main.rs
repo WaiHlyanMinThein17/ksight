@@ -20,16 +20,50 @@ use aya_ebpf::{
         bpf_probe_read_kernel, bpf_probe_read_user_str_bytes,
     },
     macros::{map, tracepoint},
-    maps::RingBuf,
+    maps::{Array, RingBuf},
     programs::TracePointContext,
 };
-use ksight_common::{Event, EventKind, EventPayload, ExecPayload, PATH_LEN};
+use ksight_common::{
+    Event, EventKind, EventPayload, ExecPayload, Filter, COMM_LEN, FILTER_MODE_COMM,
+    FILTER_MODE_PID, PATH_LEN,
+};
 use vmlinux::task_struct;
 
 const FILENAME_OFFSET: usize = 24;
 
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
+
+#[map]
+static FILTER: Array<Filter> = Array::with_max_entries(1, 0);
+
+fn passes_filter(comm: &[u8; COMM_LEN], pid: u32) -> bool {
+    let filter = match FILTER.get(0) {
+        Some(f) => f,
+        None => return true,
+    };
+    match filter.mode {
+        FILTER_MODE_PID => pid == filter.pid,
+        FILTER_MODE_COMM => {
+            let len = filter.comm_len as usize;
+            if len > COMM_LEN {
+                return false;
+            }
+            let mut i = 0;
+            while i < COMM_LEN {
+                if i >= len {
+                    break;
+                }
+                if comm[i] != filter.comm[i] {
+                    return false;
+                }
+                i += 1;
+            }
+            true
+        }
+        _ => true,
+    }
+}
 
 #[tracepoint]
 pub fn ksight_exec(ctx: TracePointContext) -> u32 {
@@ -45,6 +79,11 @@ fn try_exec(_ctx: TracePointContext) -> Result<u32, u32> {
         Err(_) => return Ok(0),
     };
     let pid = (bpf_get_current_pid_tgid() >> 32) as u32;
+
+    if !passes_filter(&comm, pid) {
+        return Ok(0);
+    }
+
     let ppid = unsafe {
         let task = bpf_get_current_task() as *const task_struct;
         if task.is_null() { 0 } else { read_ppid(task).unwrap_or(0) }
@@ -78,6 +117,10 @@ fn try_open(ctx: TracePointContext) -> Result<u32, u32> {
         Err(_) => return Ok(0),
     };
     let pid = (bpf_get_current_pid_tgid() >> 32) as u32;
+
+    if !passes_filter(&comm, pid) {
+        return Ok(0);
+    }
 
     let filename_ptr: *const u8 = match unsafe { ctx.read_at(FILENAME_OFFSET) } {
         Ok(ptr) => ptr,

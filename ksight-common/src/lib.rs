@@ -39,3 +39,27 @@ pub struct Event {
     pub kind: EventKind,
     pub payload: EventPayload,
 }
+
+#[repr(u32)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FilterMode {
+    None = 0,
+    Pid = 1,
+    Comm = 2,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Filter {
+    pub mode: u32,
+    pub pid: u32,
+    pub comm: [u8; COMM_LEN],
+    pub comm_len: u32,
+}
+
+pub const FILTER_MODE_NONE: u32 = 0;
+pub const FILTER_MODE_PID: u32 = 1;
+pub const FILTER_MODE_COMM: u32 = 2;
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for Filter {}
