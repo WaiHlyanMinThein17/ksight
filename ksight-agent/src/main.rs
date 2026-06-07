@@ -1,17 +1,18 @@
-use std::borrow::Cow;
+use std::time::Duration;
 
 use aya::{
     maps::{Array, PerCpuArray, RingBuf},
     programs::TracePoint,
 };
 use clap::Parser;
+use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyEventKind};
 use log::debug;
 use tokio::io::unix::AsyncFd;
 
 use ksight_common::{
     COMM_LEN, Event, EventKind, FILTER_MODE_COMM, FILTER_MODE_NONE, FILTER_MODE_PID, Filter,
-    HIST_BUCKETS,
 };
+use ksight_tui::{AppState, render};
 
 #[derive(Parser)]
 #[command(about = "eBPF process exec + file open tracer with block I/O latency histogram")]
@@ -40,6 +41,50 @@ fn build_filter(args: &Args) -> Filter {
         filter.comm_len = len as u32;
     }
     filter
+}
+
+fn filter_label(args: &Args) -> String {
+    if let Some(pid) = args.pid {
+        format!("pid={}", pid)
+    } else if let Some(comm) = &args.comm {
+        format!("comm={}", comm)
+    } else {
+        "none".to_string()
+    }
+}
+
+fn update_histogram(
+    hist: &PerCpuArray<impl core::borrow::Borrow<aya::maps::MapData>, u64>,
+    state: &mut AppState,
+) -> anyhow::Result<()> {
+    for (bucket, slot) in state.histogram.iter_mut().enumerate() {
+        let per_cpu = hist.get(&(bucket as u32), 0)?;
+        *slot = per_cpu.iter().sum();
+    }
+    Ok(())
+}
+
+fn format_event(event: &Event) -> String {
+    match event.kind {
+        EventKind::Exec => {
+            let p = unsafe { event.payload.exec };
+            format!(
+                "EXEC  pid={:<8} ppid={:<8} comm={}",
+                p.pid,
+                p.ppid,
+                bytes_to_str(&p.comm)
+            )
+        }
+        EventKind::Open => {
+            let p = unsafe { event.payload.open };
+            format!(
+                "OPEN  pid={:<8} comm={:<16} {}",
+                p.pid,
+                bytes_to_str(&p.comm),
+                bytes_to_str(&p.filename)
+            )
+        }
+    }
 }
 
 #[tokio::main]
@@ -82,13 +127,37 @@ async fn main() -> anyhow::Result<()> {
     let ring = RingBuf::try_from(ebpf.take_map("EVENTS").unwrap())?;
     let mut async_fd = AsyncFd::new(ring)?;
 
-    println!("ksight: tracing exec + open + block I/O latency. Ctrl-C to stop.");
+    let mut state = AppState::new(filter_label(&args));
+    let mut reader = EventStream::new();
+    let mut ticker = tokio::time::interval(Duration::from_millis(500));
 
+    let mut terminal = ratatui::init();
+    let result = run(
+        &mut terminal,
+        &mut state,
+        &mut async_fd,
+        &hist,
+        &mut reader,
+        &mut ticker,
+    )
+    .await;
+    ratatui::restore();
+    result
+}
+
+async fn run(
+    terminal: &mut ratatui::DefaultTerminal,
+    state: &mut AppState,
+    async_fd: &mut AsyncFd<RingBuf<aya::maps::MapData>>,
+    hist: &PerCpuArray<aya::maps::MapData, u64>,
+    reader: &mut EventStream,
+    ticker: &mut tokio::time::Interval,
+) -> anyhow::Result<()> {
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                println!("\nExiting.");
-                break;
+            _ = ticker.tick() => {
+                update_histogram(hist, state)?;
+                terminal.draw(|f| render(f, state))?;
             }
             guard = async_fd.readable_mut() => {
                 let mut guard = guard?;
@@ -100,71 +169,25 @@ async fn main() -> anyhow::Result<()> {
                     }
                     let event: Event =
                         unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const Event) };
-                    print_event(&event);
+                    state.push_event(format_event(&event));
                 }
                 guard.clear_ready();
+                terminal.draw(|f| render(f, state))?;
+            }
+            maybe_key = futures::StreamExt::next(reader) => {
+                if let Some(Ok(TermEvent::Key(key))) = maybe_key
+                    && key.kind == KeyEventKind::Press
+                    && key.code == KeyCode::Char('q')
+                {
+                    break;
+                }
             }
         }
     }
-
-    print_histogram(&hist)?;
     Ok(())
 }
 
-fn print_event(event: &Event) {
-    match event.kind {
-        EventKind::Exec => {
-            let p = unsafe { event.payload.exec };
-            println!(
-                "EXEC  pid={:<8} ppid={:<8} comm={}",
-                p.pid,
-                p.ppid,
-                bytes_to_str(&p.comm)
-            );
-        }
-        EventKind::Open => {
-            let p = unsafe { event.payload.open };
-            println!(
-                "OPEN  pid={:<8} comm={:<16} {}",
-                p.pid,
-                bytes_to_str(&p.comm),
-                bytes_to_str(&p.filename)
-            );
-        }
-    }
-}
-
-fn print_histogram(
-    hist: &PerCpuArray<impl core::borrow::Borrow<aya::maps::MapData>, u64>,
-) -> anyhow::Result<()> {
-    let mut totals = [0u64; HIST_BUCKETS];
-    for (bucket, total) in totals.iter_mut().enumerate() {
-        let per_cpu = hist.get(&(bucket as u32), 0)?;
-        *total = per_cpu.iter().sum();
-    }
-
-    let max = totals.iter().copied().max().unwrap_or(0);
-    if max == 0 {
-        println!("\nNo block I/O recorded.");
-        return Ok(());
-    }
-
-    println!("\nBlock I/O latency histogram:");
-    println!("{:>18} {:>10}  distribution", "usec", "count");
-    for (b, &count) in totals.iter().enumerate() {
-        if count == 0 {
-            continue;
-        }
-        let low_us = (1u64 << b) / 1000;
-        let high_us = ((1u64 << b) * 2 - 1) / 1000;
-        let range = format!("{} -> {}", low_us, high_us);
-        let bar_len = (count as usize * 40 / max as usize).max(1);
-        let bar = "*".repeat(bar_len);
-        println!("{:>18} {:>10}  {}", range, count, bar);
-    }
-    Ok(())
-}
-fn bytes_to_str(buf: &[u8]) -> Cow<'_, str> {
+fn bytes_to_str(buf: &[u8]) -> std::borrow::Cow<'_, str> {
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(&buf[..end])
 }

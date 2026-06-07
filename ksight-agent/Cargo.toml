@@ -12,7 +12,11 @@ anyhow = { workspace = true, features = ["std"] }
 env_logger = { workspace = true }
 log = { workspace = true }
 clap = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "net"] }
+crossterm = { workspace = true }
+futures = { workspace = true }
+ksight-tui = { workspace = true }
+ratatui = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "net", "time"] }
 
 [build-dependencies]
 anyhow = { workspace = true, features = ["std"] }
