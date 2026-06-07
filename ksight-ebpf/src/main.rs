@@ -4,15 +4,20 @@
 #[allow(
     clippy::all,
     dead_code,
+    improper_ctypes_definitions,
     non_camel_case_types,
     non_snake_case,
-    non_upper_case_globals
+    non_upper_case_globals,
+    unnecessary_transmutes,
+    unsafe_op_in_unsafe_fn,
 )]
 #[rustfmt::skip]
 mod vmlinux;
 
 use aya_ebpf::{
-    helpers::{bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_task, bpf_probe_read_kernel},
+    helpers::{
+        bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_task, bpf_probe_read_kernel,
+    },
     macros::{map, tracepoint},
     maps::RingBuf,
     programs::TracePointContext,
@@ -72,15 +77,20 @@ fn try_exec(_ctx: TracePointContext) -> Result<u32, u32> {
 
 /// Read real_parent->tgid from a task_struct via two CO-RE-relocated reads.
 unsafe fn read_ppid(task: *const task_struct) -> Result<u32, i64> {
-    // real_parent is a *mut task_struct field of task_struct.
-    let parent: *const task_struct =
-        bpf_probe_read_kernel(&(*task).real_parent)? as *const task_struct;
-    if parent.is_null() {
-        return Ok(0);
+    // The caller must pass a valid task pointer (the fn's unsafe contract).
+    // The actual unsafe operations -- raw-pointer derefs and probe reads --
+    // are marked explicitly per Rust 2024's unsafe_op_in_unsafe_fn.
+    unsafe {
+        // real_parent is a *mut task_struct field of task_struct.
+        let parent: *const task_struct =
+            bpf_probe_read_kernel(&(*task).real_parent)? as *const task_struct;
+        if parent.is_null() {
+            return Ok(0);
+        }
+        // tgid is the parent's thread-group id == the parent's "PID" in user terms.
+        let tgid: i32 = bpf_probe_read_kernel(&(*parent).tgid)?;
+        Ok(tgid as u32)
     }
-    // tgid is the parent's thread-group id == the parent's "PID" in user terms.
-    let tgid: i32 = bpf_probe_read_kernel(&(*parent).tgid)?;
-    Ok(tgid as u32)
 }
 
 #[cfg(not(test))]
