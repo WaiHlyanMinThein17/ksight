@@ -138,9 +138,9 @@ fn print_histogram(
     hist: &PerCpuArray<impl core::borrow::Borrow<aya::maps::MapData>, u64>,
 ) -> anyhow::Result<()> {
     let mut totals = [0u64; HIST_BUCKETS];
-    for bucket in 0..HIST_BUCKETS {
+    for (bucket, total) in totals.iter_mut().enumerate() {
         let per_cpu = hist.get(&(bucket as u32), 0)?;
-        totals[bucket] = per_cpu.iter().sum();
+        *total = per_cpu.iter().sum();
     }
 
     let max = totals.iter().copied().max().unwrap_or(0);
@@ -150,7 +150,7 @@ fn print_histogram(
     }
 
     println!("\nBlock I/O latency histogram:");
-    println!("{:>18} {:>10}  {}", "usec", "count", "distribution");
+    println!("{:>18} {:>10}  distribution", "usec", "count");
     for (b, &count) in totals.iter().enumerate() {
         if count == 0 {
             continue;
@@ -159,7 +159,7 @@ fn print_histogram(
         let high_us = ((1u64 << b) * 2 - 1) / 1000;
         let range = format!("{} -> {}", low_us, high_us);
         let bar_len = (count as usize * 40 / max as usize).max(1);
-        let bar: String = core::iter::repeat('*').take(bar_len).collect();
+        let bar = "*".repeat(bar_len);
         println!("{:>18} {:>10}  {}", range, count, bar);
     }
     Ok(())
