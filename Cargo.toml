@@ -4,6 +4,7 @@ members = [
     "ksight-common",
     "ksight-ebpf",
     "ksight-agent",
+    "ksight-tui",
 ]
 # The eBPF crate is a member (so it shares the lockfile and is reachable),
 # but excluded from default-members so a plain `cargo build` builds the
@@ -33,6 +34,8 @@ libc = { version = "0.2.159", default-features = false }
 log = { version = "0.4.22", default-features = false }
 tokio = { version = "1.40.0", default-features = false }
 which = { version = "6.0.0", default-features = false }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+crossterm = "0.29"
 
 # eBPF objects need these settings to produce valid, debuggable BPF:
 # codegen-units=1 (BPF backend wants a single unit), debug=2 + no strip
