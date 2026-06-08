@@ -50,6 +50,8 @@ jobs:
       # build already compiles them.
       - name: Clippy
         run: cargo clippy --workspace --exclude ksight-ebpf -- -D warnings
+      - name: Test
+        run: cargo test --workspace --exclude ksight-ebpf
 
       # Check formatting, but skip the generated vmlinux.rs (rustfmt::skip
       # in the source handles it, but we also don't fmt-check generated code).
