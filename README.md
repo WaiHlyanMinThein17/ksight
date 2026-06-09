@@ -162,6 +162,21 @@ checks lint warnings on every push.
 
 ## Installation
 
+### Prebuilt binary
+
+Download the latest release from the
+[Releases page](https://github.com/WaiHlyanMinThein17/ksight/releases):
+
+```bash
+tar -xzf ksight-v0.1.0-x86_64-linux.tar.gz
+cd ksight-v0.1.0-x86_64-linux
+sudo ./ksight --comm cat
+```
+
+The release binary is built for x86_64 Linux and dynamically linked against
+glibc. See [Requirements](#requirements) for kernel and privilege
+prerequisites.
+
 ### From source
 
 Building `ksight` requires the Rust toolchain plus the eBPF cross-compilation
