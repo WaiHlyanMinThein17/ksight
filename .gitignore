@@ -1,1 +1,6 @@
 /target
+
+# Release build artifacts
+/ksight-v*-x86_64-linux/
+/ksight-v*.tar.gz
+/ksight-v*.tar.gz.sha256
